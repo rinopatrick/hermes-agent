@@ -2129,6 +2129,21 @@ class TestMcpInvocationResolution:
         assert cmd == "/opt/cua-driver"
         assert args == ["mcp"]
 
+    def test_windows_manifest_command_is_translated_for_wsl(self):
+        from unittest.mock import patch
+        from tools.computer_use.cua_backend import _resolve_mcp_invocation
+
+        manifest = (
+            '{"mcp_invocation":{"command":'
+            '"C:\\\\Users\\\\patri\\\\.local\\\\bin\\\\cua-driver.exe",'
+            '"args":["mcp"]}}'
+        )
+        with patch("subprocess.run", new=self._fake_run(stdout=manifest)), \
+             patch("sys.platform", "linux"):
+            cmd, args = _resolve_mcp_invocation("cua-driver")
+        assert cmd == "/mnt/c/Users/patri/.local/bin/cua-driver.exe"
+        assert args == ["mcp"]
+
     def test_future_renamed_subcommand_is_honored(self):
         """The whole point: a future cua-driver that exposes `mcp-stdio`
         instead of `mcp` keeps working without a Hermes patch."""
