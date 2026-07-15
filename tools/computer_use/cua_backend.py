@@ -141,6 +141,17 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     return env
 
 
+def _normalize_manifest_command(command: str) -> str:
+    """Translate a host-native Windows executable path for WSL execution."""
+    if sys.platform == "win32":
+        return command
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", command)
+    if not match:
+        return command
+    drive, tail = match.groups()
+    return f"/mnt/{drive.lower()}/{tail.replace(chr(92), '/')}"
+
+
 def _resolve_mcp_invocation(
     driver_cmd: str,
     *,
@@ -192,7 +203,7 @@ def _resolve_mcp_invocation(
         # The driver knows the subcommand but didn't surface its own path.
         # Keep our resolved driver_cmd; the args are still authoritative.
         return driver_cmd, args
-    return command, args
+    return _normalize_manifest_command(command), args
 
 # Regex to parse element lines from get_window_state AX tree markdown.
 #
@@ -1218,6 +1229,18 @@ class CuaDriverBackend(ComputerUseBackend):
         except Exception as e:
             logger.debug("cua-driver start_session failed (continuing anonymous): %s", e)
 
+    def _revive_driver_session(self) -> None:
+        """Recreate transport and re-declare this backend's driver session.
+
+        cua-driver can keep the daemon alive while expiring an individual
+        session. In that state MCP may return an empty window list and the CLI
+        fallback reports ``session '<id>' has ended``. Reconnecting stdio alone
+        is insufficient: start_session must be called again for the stable id.
+        """
+        with self._session._lock:
+            self._session._restart_session_locked()
+        self._session.call_tool("start_session", {"session": self._session_id})
+
     def stop(self) -> None:
         # Tear the cua-driver session down before disconnecting so the
         # driver can clean up per-session state (cursor overlay, recording
@@ -1288,7 +1311,20 @@ class CuaDriverBackend(ComputerUseBackend):
                 )
                 windows = _windows_from(cli_lw)
             except Exception as cli_exc:
-                logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
+                message = str(cli_exc).lower()
+                if "session" in message and "has ended" in message:
+                    logger.warning("cua-driver session expired; reviving and retrying list_windows")
+                    try:
+                        self._revive_driver_session()
+                        revived_lw = self._session.call_tool(
+                            "list_windows",
+                            {"on_screen_only": True, "session": self._session_id},
+                        )
+                        windows = _windows_from(revived_lw)
+                    except Exception as revive_exc:
+                        logger.error("cua-driver session revival failed: %s", revive_exc)
+                else:
+                    logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
 
         if not windows:
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
