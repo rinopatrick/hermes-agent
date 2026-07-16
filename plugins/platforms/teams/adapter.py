@@ -47,46 +47,60 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+# The Teams SDK currently calls ``load_dotenv(find_dotenv(usecwd=True))`` at
+# import time. Plugin discovery imports this adapter for every gateway, including
+# gateways where Teams is disabled. Without isolation, the SDK can discover a
+# parent ``~/.hermes/.env`` and inject unrelated platform settings (notably
+# API_SERVER_*) into the process before gateway config is resolved.
+#
+# Preserve the SDK's existing eager bindings for backwards compatibility, but
+# make the optional dependency import environment-pure.
+_teams_import_environment = os.environ.copy()
 try:
-    from microsoft_teams.apps import App, ActivityContext
-    from microsoft_teams.common.http.client import ClientOptions
-    from microsoft_teams.api import MessageActivity, ConversationReference
-    from microsoft_teams.api.activities.typing import TypingActivityInput
-    from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
-    from microsoft_teams.api.models.adaptive_card import (
-        AdaptiveCardActionCardResponse,
-        AdaptiveCardActionMessageResponse,
-    )
-    from microsoft_teams.api.models.invoke_response import InvokeResponse, AdaptiveCardInvokeResponse
-    from microsoft_teams.apps.http.adapter import (
-        HttpMethod,
-        HttpRequest,
-        HttpResponse,
-        HttpRouteHandler,
-    )
-    from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
+    try:
+        from microsoft_teams.apps import App, ActivityContext
+        from microsoft_teams.common.http.client import ClientOptions
+        from microsoft_teams.api import MessageActivity, ConversationReference
+        from microsoft_teams.api.activities.typing import TypingActivityInput
+        from microsoft_teams.api.activities.invoke.adaptive_card import AdaptiveCardInvokeActivity
+        from microsoft_teams.api.models.adaptive_card import (
+            AdaptiveCardActionCardResponse,
+            AdaptiveCardActionMessageResponse,
+        )
+        from microsoft_teams.api.models.invoke_response import InvokeResponse, AdaptiveCardInvokeResponse
+        from microsoft_teams.apps.http.adapter import (
+            HttpMethod,
+            HttpRequest,
+            HttpResponse,
+            HttpRouteHandler,
+        )
+        from microsoft_teams.cards import AdaptiveCard, ExecuteAction, TextBlock
 
-    TEAMS_SDK_AVAILABLE = True
-except ImportError:
-    TEAMS_SDK_AVAILABLE = False
-    ClientOptions = None  # type: ignore[assignment,misc]
-    App = None  # type: ignore[assignment,misc]
-    ActivityContext = None  # type: ignore[assignment,misc]
-    MessageActivity = None  # type: ignore[assignment,misc]
-    ConversationReference = None  # type: ignore[assignment,misc]
-    TypingActivityInput = None  # type: ignore[assignment,misc]
-    AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
-    AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
-    AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
-    AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
-    InvokeResponse = None  # type: ignore[assignment,misc]
-    HttpMethod = str  # type: ignore[assignment,misc]
-    HttpRequest = None  # type: ignore[assignment,misc]
-    HttpResponse = None  # type: ignore[assignment,misc]
-    HttpRouteHandler = None  # type: ignore[assignment,misc]
-    AdaptiveCard = None  # type: ignore[assignment,misc]
-    ExecuteAction = None  # type: ignore[assignment,misc]
-    TextBlock = None  # type: ignore[assignment,misc]
+        TEAMS_SDK_AVAILABLE = True
+    except ImportError:
+        TEAMS_SDK_AVAILABLE = False
+        ClientOptions = None  # type: ignore[assignment,misc]
+        App = None  # type: ignore[assignment,misc]
+        ActivityContext = None  # type: ignore[assignment,misc]
+        MessageActivity = None  # type: ignore[assignment,misc]
+        ConversationReference = None  # type: ignore[assignment,misc]
+        TypingActivityInput = None  # type: ignore[assignment,misc]
+        AdaptiveCardInvokeActivity = None  # type: ignore[assignment,misc]
+        AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
+        AdaptiveCardActionMessageResponse = None  # type: ignore[assignment,misc]
+        AdaptiveCardInvokeResponse = None  # type: ignore[assignment,misc,union-attr]
+        InvokeResponse = None  # type: ignore[assignment,misc]
+        HttpMethod = str  # type: ignore[assignment,misc]
+        HttpRequest = None  # type: ignore[assignment,misc]
+        HttpResponse = None  # type: ignore[assignment,misc]
+        HttpRouteHandler = None  # type: ignore[assignment,misc]
+        AdaptiveCard = None  # type: ignore[assignment,misc]
+        ExecuteAction = None  # type: ignore[assignment,misc]
+        TextBlock = None  # type: ignore[assignment,misc]
+finally:
+    os.environ.clear()
+    os.environ.update(_teams_import_environment)
+    del _teams_import_environment
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
