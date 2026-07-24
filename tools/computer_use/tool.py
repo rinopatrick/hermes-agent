@@ -390,10 +390,17 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
         capture_kwargs: Dict[str, Any] = {"mode": mode, "app": args.get("app")}
-        if args.get("pid") is not None or args.get("window_id") is not None:
+        # Some tool-call serializers materialize optional integer fields as 0.
+        # Zero means "not supplied" here; forwarding pid=0/window_id=0 makes
+        # the backend enter exact-target mode and reject an otherwise ordinary
+        # app/desktop capture. Negative values remain invalid and are forwarded
+        # so the backend can return its precise validation error.
+        pid = args.get("pid") or None
+        window_id = args.get("window_id") or None
+        if pid is not None or window_id is not None:
             capture_kwargs.update({
-                "pid": args.get("pid"),
-                "window_id": args.get("window_id"),
+                "pid": pid,
+                "window_id": window_id,
             })
         cap = backend.capture(**capture_kwargs)
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))

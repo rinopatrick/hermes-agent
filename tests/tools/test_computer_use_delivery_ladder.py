@@ -191,6 +191,20 @@ def test_foreground_refused_on_old_driver():
     assert sess.last_args == {}
 
 
+def test_standard_input_schema_advertises_foreground_when_capability_token_is_missing():
+    """A current driver may expose delivery_mode in standard inputSchema while
+    omitting the optional custom capabilities extension. That is positive,
+    tool-scoped evidence that foreground delivery is accepted."""
+    from tools.computer_use.cua_backend import _CuaDriverSession
+
+    sess = _CuaDriverSession.__new__(_CuaDriverSession)
+    sess._capabilities = {"click": set()}
+    sess._input_fields = {"click": {"pid", "element_index", "delivery_mode"}}
+
+    assert sess.supports_capability("input.delivery_mode", tool="click") is True
+    assert sess.supports_capability("input.delivery_mode", tool="type_text") is False
+
+
 def test_bad_delivery_mode_rejected():
     out = {"isError": False, "data": {}, "structuredContent": {}}
     sess = _FakeSession(out, capabilities={"input.delivery_mode"})

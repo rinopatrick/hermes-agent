@@ -895,6 +895,11 @@ class _CuaDriverSession:
         # Empty until the session starts; consumers should call
         # `supports_capability` rather than reading directly.
         self._capabilities: Dict[str, set] = {}
+        # Standard MCP input-schema fields per tool. Some cua-driver releases
+        # expose a feature in inputSchema before they add the optional custom
+        # `capabilities` extension. Keep both sources so capability gating does
+        # not false-negative a parameter the connected tool explicitly accepts.
+        self._input_fields: Dict[str, set] = {}
         self._capability_version: str = ""
         # Lifecycle plumbing — see class docstring above.
         self._ready_event = threading.Event()
@@ -1017,6 +1022,17 @@ class _CuaDriverSession:
                     }
                 else:
                     self._capabilities[tool_name] = set()
+                schema = getattr(tool, "inputSchema", None)
+                if schema is None:
+                    schema = getattr(tool, "input_schema", None)
+                if schema is None:
+                    extra = getattr(tool, "model_extra", None) or {}
+                    schema = extra.get("inputSchema") or extra.get("input_schema")
+                properties = schema.get("properties") if isinstance(schema, dict) else None
+                self._input_fields[tool_name] = (
+                    {name for name in properties if isinstance(name, str)}
+                    if isinstance(properties, dict) else set()
+                )
             # capability_version is a top-level sibling of `tools` on the
             # tools/list response. cua-driver-core/src/tool.rs:354 emits
             # it; cua-driver-core/src/protocol.rs:150 leaves it OUT of
@@ -1130,7 +1146,14 @@ class _CuaDriverSession:
         on a dead/uninitialised wrapper degrade rather than crash).
         """
         if tool is not None:
-            return capability in self._capabilities.get(tool, set())
+            if capability in self._capabilities.get(tool, set()):
+                return True
+            # `input.delivery_mode` maps directly to the standard MCP input
+            # parameter. cua-driver 0.12.3 documents and accepts this field but
+            # omits the optional capability token from tools/list.
+            if capability == "input.delivery_mode":
+                return "delivery_mode" in self._input_fields.get(tool, set())
+            return False
         return any(capability in caps for caps in self._capabilities.values())
 
     def _has_tool(self, name: str) -> bool:
@@ -1171,6 +1194,48 @@ class _CuaDriverSession:
             or (module.startswith("anyio") and "Resource" in name)
             or isinstance(exc, (BrokenPipeError, EOFError))
         )
+
+    @staticmethod
+    def _is_ended_driver_session_result(result: Dict[str, Any]) -> bool:
+        """True when cua-driver kept MCP alive but expired the logical session."""
+        if result.get("isError") is not True:
+            return False
+        messages = [result.get("data")]
+        structured = result.get("structuredContent")
+        if isinstance(structured, dict):
+            messages.extend((structured.get("message"), structured.get("error")))
+        text = " ".join(value for value in messages if isinstance(value, str)).lower()
+        return "session" in text and "has ended" in text
+
+    def _call_mcp_with_session_revival(
+        self,
+        name: str,
+        args: Dict[str, Any],
+        timeout: float,
+    ) -> Dict[str, Any]:
+        """Run one MCP call, reviving an expired cua-driver session once."""
+        result = self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        session_id = args.get("session")
+        if (
+            name in self._LIFECYCLE_CALLS
+            or not isinstance(session_id, str)
+            or not session_id
+            or not self._is_ended_driver_session_result(result)
+        ):
+            return result
+
+        logger.warning(
+            "cua-driver logical session %s ended during %s; reviving once",
+            session_id,
+            name,
+        )
+        started = self._bridge.run(
+            self._call_tool_async("start_session", {"session": session_id}),
+            timeout=timeout,
+        )
+        if started.get("isError") is True:
+            return result
+        return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
 
     @staticmethod
     def _is_transient_daemon_error(exc: Exception) -> bool:
@@ -1360,7 +1425,7 @@ class _CuaDriverSession:
         # transport (which has its own retry + screenshot-to-file mitigation)
         # rather than burning a long backoff chain on a path that won't recover.
         try:
-            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+            return self._call_mcp_with_session_revival(name, args, timeout)
         except Exception as e:
             if self._is_transient_daemon_error(e):
                 logger.warning(
@@ -1376,7 +1441,7 @@ class _CuaDriverSession:
             logger.warning("cua-driver MCP session closed during %s; reconnecting once", name)
             with self._lock:
                 self._restart_session_locked()
-            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+            return self._call_mcp_with_session_revival(name, args, timeout)
 
 
 def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
